@@ -643,3 +643,122 @@
 + 避免`隐式类型转换`
 
   > `隐式类型转换`本身就是增加成本，而且又是还会导致不走索引
+
+### 聚簇索引、辅助索引
+
+> 参考资料：
+>
+> + [数据存储结构之B-Tree与B+Tree](https://nicky-chen.github.io/algorithm/btree-info.html) 
+> + [MYSQL-B+TREE索引原理](https://www.jianshu.com/p/486a514b0ded) 
+
++ 聚簇索引(clustered index)
+
+  + 什么叫聚簇索引
+
+    > + 在InnoDB引擎中，使用`聚簇索引`来存储数据
+    > + `聚簇索引`就是最基本的索引，所有`辅助索引`都需要依赖`聚簇索引`
+    >
+    > + InnoDB使用B+TREE的结构，每个非叶子节点中以相互隔开的形式存储`指向子节点的指针`与`聚簇索引值`，叶子节点上，（假设称每条记录的`聚簇索引值`与其他内容为`p-v对`），按顺序存储`p-v对`
+
+  + 图示
+
+    ![image-20181009154544566](assets/image-20181009154544566.png) 
+
+  + mysql是如何选择`聚簇索引`的
+
+    > - 如果表中定义了PRIMARY KEY，那么InnoDB就会使用它作为聚簇索引；
+    > - 如果没有定义PRIMARY KEY，InnoDB会选择第一个有NOT NULL约束的唯一索引作为PRIMARY KEY，然后InnoDB会使用它作为聚簇索引；
+    > - 如果表中没有定义PRIMARY KEY或者合适的唯一索引。InnoDB内部会在含有行ID值的合成列生成隐藏的聚簇索引。这些行使用InnoDB赋予这些表的ID进行排序。行ID是6个字节的字段，且作为新行单一地自增。因此，根据行ID排序的行数据在物理上是根据插入的顺序进行排序。
+
++ 辅助索引(secondary index)
+
+  + 什么叫辅助索引
+
+    > + 除了聚簇索引之外的所有索引都被称为辅助索引
+    > + InnoDB使用B+Tree结构，每个非叶子节点中以相互隔开的形式存储`指向子节点的指针`与`辅助索引字段值`，叶子节点上，（假设称每条记录的`辅助索引字段值`与`聚簇索引字段值`为`k-p对`），按顺序存储`k-p对`
+    >
+    > - 可以理解为：辅助索引都是反向索引（通过value找key）
+
+  + 图示
+
+    ![image-20181009155354142](assets/image-20181009155354142.png) 
+
+
+### count(*)优化
+
+> 本次测试mysql版本为5.6
+
++ 表结构
+
+  ```sql
+  CREATE TABLE `t_bd_url_content` (
+    `id` int(11) NOT NULL AUTO_INCREMENT COMMENT '记录的唯一标识',
+    `ir_start_id` int(11) NOT NULL DEFAULT '0' COMMENT '起始频道编号',
+    `gmt_modified` datetime DEFAULT NULL COMMENT '记录最后更新时间',
+    `gmt_created` datetime DEFAULT NULL COMMENT '记录创建时间',
+    PRIMARY KEY (`id`) USING BTREE,
+    KEY `idx_ir_start_id` (`ir_start_id`) USING BTREE,
+  ) ENGINE=InnoDB DEFAULT CHARSET=utf8 ROW_FORMAT=COMPRESSED;
+  ```
+
+  > 表中有约160万条数据
+
++ 需求
+
+  查出表中`id`小于`2208565`得数据有多少条
+
++ 常规查询方法
+
+  ```sql
+  select count(*) from t_bd_url_content where id <= 2208565
+  ```
+
+  > 经测试，该查询约消耗140s
+
++ 优化后查询
+
+  ```sql
+  select count(*) from t_bd_url_content where id <= 2208565 and ir_start_id >= 0
+  ```
+
+  > ir_start_id的值最小为0，所以该条件一点不影响查询结果
+  >
+  > 经测试，该查询约消耗0.6s
+
++ 原因分析
+
+  > 请先理解[聚簇索引与辅助索引](#聚簇索引、辅助索引) 
+  >
+  > 资料参见[在MySQL的InnoDB存储引擎中count(*)函数的优化](https://segmentfault.com/a/1190000003793230) 
+
+  + 常规查询分析
+
+    常规查询中，用到的索引为主键
+
+    ```sql
+    explain select count(*) from t_bd_url_content where id <= 2208565
+    ```
+
+    结果：
+
+    ![image-20181009160131274](assets/image-20181009160131274.png) 
+
+    > + 本次查询使用的索引为主键
+    > + count(*)函数是先从磁盘中读取表中的数据到内存缓冲区，然后扫描全表获得行记录数的。
+    >
+    > + 这里使用的主键是`聚簇索引`，因为该索引树的叶子节点上的内容为每条记录的所有数据，所以innoDB会将全表所有数据读到内存缓冲区中，才能统计出行记录数，这个过程中，产生了很多次磁盘I/O，消耗了很多时间。
+
+  + 优化后查询分析
+
+    优化查询汇总，用到的索引为辅助索引
+
+    ```sql
+    explain select count(*) from t_bd_url_content where id <= 2208565 and ir_start_id >= 0;
+    ```
+
+    结果：
+
+    ![image-20181009161123833](assets/image-20181009161123833.png) 
+
+    > + 本次查询使用的索引为辅助索引`idx_ir_start_id`
+    > + 这里使用的是`辅助索引`，因为该索引树的叶子节点上的内容为每个`辅助索引值`对应的记录的`聚簇索引值`，也就是本表中的`id`，数据存储量特别小，所以innoDB几乎可以一次将整个索引树读到内存缓冲区中，通过统计该数中记录了多少个`id`值，来统计行记录数，大大节省了时间。
