@@ -169,11 +169,41 @@
 > + 如何解决误删主库问题，从数据库不是也会同步吗？
 >
 
-## 添加用户及授权
+## 授权远程登录
 
-> $ grant all privileges on mq.* to 'test'@'localhost' identified by '1234';
->
-> $ flush privileges;
+> 授权信息的记录在mysql.user表中
+
++ 查看授权
+
+  ```shell
+  select * from user
+  ```
+
++ 新增、修改授权
+
+  ```shell
+  $ grant all privileges on mq.* to 'test'@'localhost' identified by '1234';
+  $ flush privileges;
+  ```
+
+  实际上是根据`User`和`Host`字段新增或修改`user`表中记录
+
++ 取消授权
+
+  ```shell
+  $ revoke all privileges on *.* from root@localhost; 
+  $ flush privileges;
+  ```
+
+  > 只是将user表中所有权限字段设为`N`
+
++ 删除用户
+
+  ```shell
+  delete from user where User='root' and Host='*';
+  ```
+
+  > 真正的删除了user表中用户
 
 # 数据库设计
 
