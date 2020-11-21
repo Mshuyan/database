@@ -94,3 +94,15 @@
   (select user_id,max(submit_time) as submit_time from table1) as temp
   where t.user_id=temo.user_id and t.submit_time=temp.submit_time
   ```
+
+### 服务器卡顿
+
++ 连接远程mysql时可能很卡，可以关闭DNS解析
+
++ `my.cnf`中加入如下配置
+
+  ```
+  skip-name-resolve
+  ```
+
+  
